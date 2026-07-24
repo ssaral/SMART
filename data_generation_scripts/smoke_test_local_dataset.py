@@ -226,6 +226,14 @@ def main() -> int:
 
     return 0
 
-
 if __name__ == "__main__":
     raise SystemExit(main())
+
+# To run this script: use command
+# python3 data_generation_scripts/smoke_test_local_dataset.py \ 
+#   --manifest /mnt/warm_storage/saral/smart/prepared_data/clean_task_manifest.csv \ 
+#   --catalog-output /mnt/warm_storage/saral/smart/prepared_data/local_task_catalog.json \ 
+#   --sample-task-id sglue::axg \ 
+#   --sample-task-id tulu::wildguardmix \ 
+#   --sample-task-id sglue::qqp \ 
+#   2>&1 | tee /mnt/warm_storage/saral/smart/prepared_data/local_adapter_smoke_test.log 
