@@ -1094,3 +1094,12 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+# To run this script: use the command below:
+# python3 data_generation_scripts/verify_all_embeddings.py \
+#   --manifest /mnt/warm_storage/saral/smart/prepared_data/clean_task_manifest.csv \
+#   --embedding-root /mnt/warm_storage/saral/smart/artifacts/prompt_embeddings/gte-large \
+#   --output-root /mnt/warm_storage/saral/smart/artifacts/prompt_embeddings/gte-large/verification \
+#   --chunk-rows 8192 \
+#   2>&1 | tee \
+#   /mnt/warm_storage/saral/smart/artifacts/prompt_embeddings/gte-large/verification/verification.log
