@@ -689,6 +689,43 @@ def main() -> int:
                 task.task_id,
             )
 
+        # Reproduce the exact mean operation used by embed_all_tasks.py.
+        # This is the artifact-integrity check.
+        replication_mean = embeddings.mean(
+            axis=0,
+            dtype=np.float32,
+        )
+        
+        replication_mean_error = float(
+            np.max(
+                np.abs(
+                    replication_mean
+                    - np.asarray(
+                        saved_mean,
+                        dtype=np.float32,
+                    )
+                )
+            )
+        )
+        
+        if not np.array_equal(
+            replication_mean,
+            np.asarray(
+                saved_mean,
+                dtype=np.float32,
+            ),
+        ):
+            add_failure(
+                failures,
+                "task_mean_replication",
+                (
+                    "Recomputing the task mean with the same "
+                    "float32 NumPy reduction did not reproduce "
+                    "the saved mean. Maximum absolute difference: "
+                    f"{replication_mean_error:.9g}."
+                ),
+                task.task_id,
+            )
         component_sum = np.zeros(
             EXPECTED_DIMENSION,
             dtype=np.float64,
@@ -798,26 +835,47 @@ def main() -> int:
                 mean_error,
             )
 
-            mean_matches = np.allclose(
-                independent_mean,
-                np.asarray(
-                    saved_mean,
-                    dtype=np.float64,
-                ),
-                rtol=args.mean_rtol,
-                atol=args.mean_atol,
-            )
-
-            if not mean_matches:
+            # This float64 calculation is a higher-precision reference,
+            # not an exact reproduction of the float32 reduction used
+            # during embedding generation.
+            #
+            # Small differences are expected because reduction precision,
+            # grouping and addition order differ.
+            high_precision_drift_limit = 2e-5
+            
+            if mean_error > high_precision_drift_limit:
                 add_failure(
                     failures,
-                    "task_mean_recomputation",
-                    f"Independently recomputed mean does "
-                    f"not match saved mean. Maximum "
-                    f"absolute difference: "
-                    f"{mean_error:.9g}.",
+                    "task_mean_high_precision_drift",
+                    (
+                        "The saved float32 task mean differs unusually "
+                        "from the chunked float64 reference. Maximum "
+                        f"absolute difference: {mean_error:.9g}; "
+                        f"limit: {high_precision_drift_limit:.9g}."
+                    ),
                     task.task_id,
                 )
+
+            # mean_matches = np.allclose(
+            #     independent_mean,
+            #     np.asarray(
+            #         saved_mean,
+            #         dtype=np.float64,
+            #     ),
+            #     rtol=args.mean_rtol,
+            #     atol=args.mean_atol,
+            # )
+
+            # if not mean_matches:
+            #     add_failure(
+            #         failures,
+            #         "task_mean_recomputation",
+            #         f"Independently recomputed mean does "
+            #         f"not match saved mean. Maximum "
+            #         f"absolute difference: "
+            #         f"{mean_error:.9g}.",
+            #         task.task_id,
+            #     )
 
         if task_min_norm != math.inf:
             global_min_norm = min(
@@ -868,6 +926,9 @@ def main() -> int:
                 "maximum_mean_absolute_error": (
                     mean_error
                 ),
+                "replication_mean_max_absolute_error": (
+                replication_mean_error
+                ),
                 "passed": task_passed,
             }
         )
@@ -901,6 +962,7 @@ def main() -> int:
         "zero_norm_count",
         "nonfinite_value_count",
         "maximum_mean_absolute_error",
+        "replication_mean_max_absolute_error",
         "passed",
     ]
 
@@ -994,6 +1056,10 @@ def main() -> int:
             "mean_relative_tolerance": (
                 args.mean_rtol
             ),
+            "maximum_float64_reference_drift": (
+            maximum_mean_error
+            ),
+        "float64_reference_drift_limit": 2e-5,
         },
         "run_summary_checks": {
             "status": run_summary.get("status"),
