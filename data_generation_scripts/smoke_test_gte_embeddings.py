@@ -535,3 +535,15 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+# export CUDA_VISIBLE_DEVICES=0
+
+# python3 data_generation_scripts/smoke_test_gte_embeddings.py \
+#   --manifest /mnt/warm_storage/saral/smart/prepared_data/clean_task_manifest.csv \
+#   --task-id 'sglue::axg' \
+#   --encoder thenlper/gte-large \
+#   --device cuda:0 \
+#   --batch-size 128 \
+#   --output-root /mnt/warm_storage/saral/smart/artifacts/embedding_smoke \
+#   2>&1 | tee \
+#   /mnt/warm_storage/saral/smart/artifacts/embedding_smoke/gte_axg.log
