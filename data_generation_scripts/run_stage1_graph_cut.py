@@ -750,4 +750,20 @@ def main() -> int:
 if __name__ == "__main__":
     raise SystemExit(main())
 
+# Compilation command:
 # python3 -m py_compile  data_generation_scripts/run_stage1_graph_cut.py 
+
+# To run, we set below thread counts:
+# export OMP_NUM_THREADS=1
+# export MKL_NUM_THREADS=1
+# export OPENBLAS_NUM_THREADS=1
+
+# python3 data_generation_scripts/run_stage1_graph_cut.py \
+#   --manifest /mnt/warm_storage/saral/smart/prepared_data/clean_task_manifest.csv \
+#   --task-embeddings /mnt/warm_storage/saral/smart/artifacts/prompt_embeddings/gte-large/task_embeddings.npy \
+#   --output-root /mnt/warm_storage/saral/smart/artifacts/stage1_graph_cut \
+#   --lambda-value 0.4 \
+#   --budget 309 \
+#   --determinism-runs 2 \
+#   2>&1 | tee \
+#   /mnt/warm_storage/saral/smart/artifacts/stage1_graph_cut/stage1_graph_cut.log
