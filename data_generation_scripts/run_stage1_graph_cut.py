@@ -749,3 +749,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+# python3 -m py_compile  data_generation_scripts/run_stage1_graph_cut.py 
