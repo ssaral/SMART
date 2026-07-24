@@ -644,3 +644,19 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+
+# chmod +x data_generation_scripts/analyze_stage2_feasibility.py
+# python3 -m py_compile data_generation_scripts/analyze_stage2_feasibility.py
+# To use this script:
+# mkdir -p  /mnt/warm_storage/saral/smart/artifacts/stage2_feasibility
+# python3 data_generation_scripts/analyze_stage2_feasibility.py \
+#   --allocations /mnt/warm_storage/saral/smart/artifacts/stage1_allocations/task_allocations.csv \
+#   --output-root /mnt/warm_storage/saral/smart/artifacts/stage2_feasibility \
+#   --embedding-dimension 1024 \
+#   --embedding-dtype-bytes 4 \
+#   --kernel-dtype-bytes 4 \
+#   --working-set-multiplier 3.0 \
+#   --usable-memory-fraction 0.60 \
+#   2>&1 | tee /mnt/warm_storage/saral/smart/artifacts/stage2_feasibility/feasibility.log
