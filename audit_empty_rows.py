@@ -205,3 +205,25 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+# Use the below code to fetch the important summary
+# python3 - <<'PY'
+# import json
+
+# path = (
+#     "/mnt/warm_storage/saral/smart/"
+#     "dataset_inventory/empty_row_audit.json"
+# )
+
+# with open(path, encoding="utf-8") as handle:
+#     report = json.load(handle)
+
+# print("Affected tasks:", report["affected_task_count"])
+# print(json.dumps(report["totals"], indent=2))
+
+# for task_id, details in report["affected_tasks"].items():
+#     print()
+#     print(task_id)
+#     print(json.dumps(details["counts"], indent=2))
+#     print(json.dumps(details["samples"], indent=2)[:3000])
+# PY
