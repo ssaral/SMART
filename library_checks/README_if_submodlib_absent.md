@@ -31,6 +31,8 @@ python3 -m pip freeze | sort > \
 Create:
 
 ```bash
+cd /data/saral/wdir/smart || exit 1
+
 cat > submod_check.py <<'PY'
 from __future__ import annotations
 
@@ -41,7 +43,102 @@ import submodlib
 import submodlib.functions as submod_fn
 
 
-print("submodlib-py:", importlib.metadata.version("submodlib-py"))
+def make_objective(
+    kernel: np.ndarray,
+) -> submod_fn.graphCut.GraphCutFunction:
+    return submod_fn.graphCut.GraphCutFunction(
+        n=kernel.shape[0],
+        mode="dense",
+        ggsijs=kernel,
+        lambdaVal=0.4,
+        separate_rep=False,
+    )
+
+
+def full_lazy_greedy_order(
+    kernel: np.ndarray,
+) -> list[tuple[int, float]]:
+    """Return all n elements despite submodlib's budget < n rule."""
+
+    n = kernel.shape[0]
+    objective = make_objective(kernel)
+
+    if n == 1:
+        gain = float(
+            objective.marginalGain(set(), 0)
+        )
+        return [(0, gain)]
+
+    result = objective.maximize(
+        budget=n - 1,
+        optimizer="LazyGreedy",
+        stopIfZeroGain=False,
+        stopIfNegativeGain=False,
+        verbose=False,
+        show_progress=False,
+    )
+
+    result = [
+        (int(index), float(gain))
+        for index, gain in result
+    ]
+
+    selected = {
+        index
+        for index, _ in result
+    }
+
+    remaining = sorted(
+        set(range(n)) - selected
+    )
+
+    if len(remaining) != 1:
+        raise RuntimeError(
+            f"Expected one remaining element; found {remaining}"
+        )
+
+    final_index = remaining[0]
+
+    final_gain = float(
+        objective.marginalGain(
+            selected,
+            final_index,
+        )
+    )
+
+    # Independent validation using objective values.
+    previous_value = float(
+        objective.evaluate(selected)
+    )
+    complete_set = selected | {final_index}
+    complete_value = float(
+        objective.evaluate(complete_set)
+    )
+    evaluation_gain = complete_value - previous_value
+
+    if not np.isclose(
+        final_gain,
+        evaluation_gain,
+        rtol=1e-6,
+        atol=1e-6,
+    ):
+        raise RuntimeError(
+            "Final marginal gain validation failed: "
+            f"marginalGain={final_gain}, "
+            f"evaluate difference={evaluation_gain}"
+        )
+
+    result.append(
+        (final_index, final_gain)
+    )
+
+    return result
+
+
+print(
+    "submodlib-py:",
+    importlib.metadata.version("submodlib-py"),
+)
 print("NumPy:", np.__version__)
 
 points = np.asarray(
@@ -68,39 +165,8 @@ print("Kernel finite:", bool(np.isfinite(kernel).all()))
 print("Kernel:")
 print(kernel)
 
-objective = submod_fn.graphCut.GraphCutFunction(
-    n=kernel.shape[0],
-    mode="dense",
-    ggsijs=kernel,
-    lambdaVal=0.4,
-    separate_rep=False,
-)
-
-result_1 = objective.maximize(
-    budget=kernel.shape[0],
-    optimizer="LazyGreedy",
-    stopIfZeroGain=False,
-    stopIfNegativeGain=False,
-    verbose=False,
-    show_progress=False,
-)
-
-objective = submod_fn.graphCut.GraphCutFunction(
-    n=kernel.shape[0],
-    mode="dense",
-    ggsijs=kernel,
-    lambdaVal=0.4,
-    separate_rep=False,
-)
-
-result_2 = objective.maximize(
-    budget=kernel.shape[0],
-    optimizer="LazyGreedy",
-    stopIfZeroGain=False,
-    stopIfNegativeGain=False,
-    verbose=False,
-    show_progress=False,
-)
+result_1 = full_lazy_greedy_order(kernel)
+result_2 = full_lazy_greedy_order(kernel)
 
 print("Graph Cut result 1:", result_1)
 print("Graph Cut result 2:", result_2)
@@ -108,7 +174,8 @@ print("Graph Cut result 2:", result_2)
 assert kernel.shape == (4, 4)
 assert np.isfinite(kernel).all()
 assert len(result_1) == 4
-assert len({int(index) for index, _ in result_1}) == 4
+assert len({index for index, _ in result_1}) == 4
+assert {index for index, _ in result_1} == set(range(4))
 assert result_1 == result_2
 
 print("Submodlib compatibility smoke test passed.")
