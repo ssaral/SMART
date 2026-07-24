@@ -56,3 +56,25 @@ for C in 512 1024 2048 2961; do
     2>&1 | tee \
     "$CAND/stream_qed_ii_cand${C}.log"
 done
+
+for C in 512 1024 2048 4096 8192; do
+  echo
+  echo "===== ANLI R3 n=10000 candidate size $C ====="
+
+# Large-task quality curve
+  /usr/bin/time -v \
+    -o "$CAND/time_anli_r3_rep10000_cand${C}.txt" \
+    python3 \
+    /data/saral/wdir/smart/data_generation_scripts/benchmark_candidate_facility_location.py \
+    --allocations "$ROOT/artifacts/stage1_allocations/task_allocations.csv" \
+    --embedding-root "$ROOT/artifacts/prompt_embeddings/gte-large" \
+    --exact-benchmark-root "$EXACT" \
+    --task-id 'flan2021::anli_r3_0.1.0' \
+    --sample-size 10000 \
+    --candidate-size "$C" \
+    --seed 23 \
+    --output-root "$CAND" \
+    --show-progress \
+    2>&1 | tee \
+    "$CAND/anli_r3_rep10000_cand${C}.log"
+done
