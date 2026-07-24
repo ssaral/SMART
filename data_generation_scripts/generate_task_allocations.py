@@ -754,3 +754,16 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+# python3 -m py_compile data_generation_scripts/generate_task_allocations.py
+
+# To run this script:
+# mkdir -p  /mnt/warm_storage/saral/smart/artifacts/stage1_allocations
+# python3 data_generation_scripts/generate_task_allocations.py \
+#   --graph-cut-order /mnt/warm_storage/saral/smart/artifacts/stage1_graph_cut/graph_cut_order.csv \
+#   --manifest /mnt/warm_storage/saral/smart/prepared_data/clean_task_manifest.csv \
+#   --output-root /mnt/warm_storage/saral/smart/artifacts/stage1_allocations \
+#   --budgets 25000 50000 \
+#   --temperature 1.0 \
+#   2>&1 | tee \
+#   /mnt/warm_storage/saral/smart/artifacts/stage1_allocations/allocation.log
