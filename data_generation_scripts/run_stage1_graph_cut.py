@@ -130,32 +130,148 @@ def package_version(name: str) -> str | None:
     except importlib.metadata.PackageNotFoundError:
         return None
 
-
 def run_graph_cut(
     kernel: np.ndarray,
     budget: int,
     lambda_value: float,
     show_progress: bool,
 ) -> list[tuple[int, float]]:
-    # This mirrors the inspected SMART repository call.
+    """Run LazyGreedy, including an exact full-ground-set workaround."""
+
+    ground_set_size = int(kernel.shape[0])
+
     objective = submod_fn.graphCut.GraphCutFunction(
-        n=kernel.shape[0],
+        n=ground_set_size,
         mode="dense",
         ggsijs=kernel,
         lambdaVal=lambda_value,
         separate_rep=False,
     )
 
+    if budget < ground_set_size:
+        result = objective.maximize(
+            budget=budget,
+            optimizer="LazyGreedy",
+            stopIfZeroGain=False,
+            stopIfNegativeGain=False,
+            verbose=False,
+            show_progress=show_progress,
+        )
+
+        return [
+            (int(index), float(gain))
+            for index, gain in result
+        ]
+
+    if budget != ground_set_size:
+        raise ValueError(
+            f"Budget {budget} exceeds ground-set size "
+            f"{ground_set_size}."
+        )
+
+    # submodlib-py 0.0.3 rejects budget == ground-set size.
+    # Select the first n-1 items with LazyGreedy, then append
+    # the unique remaining element with its exact marginal gain.
+    if ground_set_size == 1:
+        final_gain = float(
+            objective.marginalGain(set(), 0)
+        )
+        return [(0, final_gain)]
+
     result = objective.maximize(
-        budget=budget,
+        budget=ground_set_size - 1,
         optimizer="LazyGreedy",
+        stopIfZeroGain=False,
+        stopIfNegativeGain=False,
+        verbose=False,
         show_progress=show_progress,
     )
 
-    return [
+    result = [
         (int(index), float(gain))
         for index, gain in result
     ]
+
+    selected = {
+        index
+        for index, _ in result
+    }
+
+    remaining = sorted(
+        set(range(ground_set_size)) - selected
+    )
+
+    if len(remaining) != 1:
+        raise RuntimeError(
+            "Expected exactly one unselected task after "
+            f"budget n-1; found {remaining}."
+        )
+
+    final_index = remaining[0]
+
+    final_gain = float(
+        objective.marginalGain(
+            selected,
+            final_index,
+        )
+    )
+
+    # Cross-check the final gain using direct evaluations.
+    previous_value = float(
+        objective.evaluate(selected)
+    )
+    complete_value = float(
+        objective.evaluate(
+            selected | {final_index}
+        )
+    )
+    evaluation_gain = (
+        complete_value - previous_value
+    )
+
+    if not np.isclose(
+        final_gain,
+        evaluation_gain,
+        rtol=1e-6,
+        atol=1e-5,
+    ):
+        raise RuntimeError(
+            "Final task marginal gain failed validation: "
+            f"marginalGain={final_gain:.12g}, "
+            f"evaluate difference={evaluation_gain:.12g}."
+        )
+
+    result.append(
+        (final_index, final_gain)
+    )
+
+    return result
+
+# def run_graph_cut(
+#     kernel: np.ndarray,
+#     budget: int,
+#     lambda_value: float,
+#     show_progress: bool,
+# ) -> list[tuple[int, float]]:
+#     # This mirrors the inspected SMART repository call.
+#     objective = submod_fn.graphCut.GraphCutFunction(
+#         n=kernel.shape[0],
+#         mode="dense",
+#         ggsijs=kernel,
+#         lambdaVal=lambda_value,
+#         separate_rep=False,
+#     )
+
+#     result = objective.maximize(
+#         budget=budget,
+#         optimizer="LazyGreedy",
+#         show_progress=show_progress,
+#     )
+
+#     return [
+#         (int(index), float(gain))
+#         for index, gain in result
+#     ]
 
 
 def main() -> int:
@@ -598,6 +714,23 @@ def main() -> int:
             "determinism_runs": (
                 args.determinism_runs
             ),
+            "submodlib_full_budget_compatibility": {
+                "reason": (
+                    "submodlib-py 0.0.3 requires maximize budget "
+                    "to be strictly smaller than the effective "
+                    "ground-set size."
+                ),
+                "library_maximize_budget": (
+                    task_count - 1
+                    if budget == task_count
+                    else budget
+                ),
+                "completion_method": (
+                    "Append the unique remaining element with "
+                    "GraphCutFunction.marginalGain."
+                ),
+                "approximation": False,
+            },
         },
         "inputs": {
             "manifest": str(manifest_path),
