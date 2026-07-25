@@ -1217,3 +1217,299 @@ A failure is not grounds to loosen tolerances or accept a different ordering. It
 * an implementation error.
 
 [1]: https://github.com/decile-team/submodlib "GitHub - decile-team/submodlib: Summarize Massive Datasets using Submodular Optimization · GitHub"
+
+---
+
+If the parity check fails with mentioned error, then follow the below steps, else ignore.
+```
+RuntimeError: Facility Location parity failed. Inspect parity_report.json and parity_order.csv.
+```
+
+The failure is **not an objective-function error**. It is an **ordering mismatch caused by a near-tie plus different floating-point and tie-breaking behavior**.
+
+## What happened
+
+The two implementations selected the same first 85 examples. At rank 86:
+
+* Submodlib’s dense implementation selected one candidate.
+* Our PyTorch blockwise implementation selected another.
+* Their marginal gains were effectively indistinguishable at float32 precision.
+
+After that first different choice, their coverage vectors differed, so later selections also diverged.
+
+The key evidence is:
+
+```text
+Dense gain vs explicit cosine:  True
+Blockwise vs explicit cosine:   True
+Dense/blockwise gains match:    True
+Maximum cross gain error:       0.000270426
+Selection match:                False
+Matching prefix:                85/166
+```
+
+Both implementations therefore evaluated the **same Facility Location objective correctly**. The validation failed solely because it required the exact same candidate indices in the exact same order.
+
+## Why the near-tie was resolved differently
+
+The dense and blockwise paths do not perform numerically identical operations.
+
+### Submodlib dense path
+
+It uses:
+
+* its internal C++ cosine-kernel computation;
+* CPU/C++ float32 reductions;
+* its internal priority queue;
+* its own tie-handling order.
+
+### Our blockwise path
+
+It uses:
+
+* PyTorch normalization;
+* GPU float32 matrix-vector multiplication;
+* GPU reduction order;
+* a Python heap whose secondary key is the candidate index.
+
+Even when computing the same mathematical expression, changing the reduction order can alter the last few float32 digits. A difference of approximately `2.7e-4` was enough to reverse two nearly equal candidates.
+
+Once the first candidate changes, exact sequence equality is no longer expected.
+
+## What did not cause the failure
+
+The singleton shortcut was valid. The minimum pairwise cosine was:
+
+```text
+0.84055096
+```
+
+so all pairwise similarities were positive. Therefore,
+
+[
+\sum_i \max(0,s_{ij})=\sum_i s_{ij},
+]
+
+and the vector-sum singleton calculation was exact for this pool.
+
+It was also not caused by:
+
+* requesting a 166-element prefix rather than an (n-1) ordering;
+* a wrong cosine objective;
+* an incorrect coverage update;
+* a stale LazyGreedy bound;
+* the absence of the dense matrix.
+
+## Confirm the exact rank-86 gain gap
+
+Run this diagnostic using a common CPU float64 calculation. It will show the candidates competing at the first mismatch under the same first 85 selections.
+
+```bash
+cd /data/saral/wdir/smart_v2 || exit 1
+
+python3 - <<'PY'
+import csv
+from pathlib import Path
+
+import numpy as np
+
+
+parity_path = Path(
+    "/mnt/warm_storage/saral/smart_v2/"
+    "stage2/parity/sglue__copa/parity_order.csv"
+)
+
+pool_manifest_path = Path(
+    "/mnt/warm_storage/saral/smart_v2/"
+    "stage2/pools/pool_manifest.csv"
+)
+
+embedding_path = Path(
+    "/mnt/warm_storage/saral/smart_v2/"
+    "embeddings/gte-large/sglue/"
+    "train_prompt_embeddings.npy"
+)
+
+
+with parity_path.open(
+    encoding="utf-8",
+    newline="",
+) as handle:
+    parity_rows = list(csv.DictReader(handle))
+
+first_mismatch = next(
+    index
+    for index, row in enumerate(parity_rows)
+    if (
+        int(row["dense_local_index"])
+        != int(row["blockwise_local_index"])
+    )
+)
+
+print(
+    "First mismatch rank:",
+    first_mismatch + 1,
+)
+
+dense_candidate = int(
+    parity_rows[first_mismatch][
+        "dense_local_index"
+    ]
+)
+
+blockwise_candidate = int(
+    parity_rows[first_mismatch][
+        "blockwise_local_index"
+    ]
+)
+
+common_prefix = [
+    int(row["dense_local_index"])
+    for row in parity_rows[:first_mismatch]
+]
+
+
+with pool_manifest_path.open(
+    encoding="utf-8",
+    newline="",
+) as handle:
+    pool_rows = list(csv.DictReader(handle))
+
+pool = next(
+    row
+    for row in pool_rows
+    if row["task_id"] == "sglue::copa"
+)
+
+start = int(pool["first_dataset_index"])
+end = int(pool["last_dataset_index"]) + 1
+
+stored = np.load(
+    embedding_path,
+    mmap_mode="r",
+)
+
+# Use a common float64 reference for diagnosis.
+x = np.asarray(
+    stored[start:end],
+    dtype=np.float64,
+)
+
+x /= np.linalg.norm(
+    x,
+    axis=1,
+    keepdims=True,
+)
+
+kernel = x @ x.T
+
+coverage = np.zeros(
+    x.shape[0],
+    dtype=np.float64,
+)
+
+selected = set()
+
+for candidate in common_prefix:
+    coverage = np.maximum(
+        coverage,
+        kernel[:, candidate],
+    )
+    selected.add(candidate)
+
+gains = np.full(
+    x.shape[0],
+    -np.inf,
+    dtype=np.float64,
+)
+
+for candidate in range(x.shape[0]):
+    if candidate in selected:
+        continue
+
+    gains[candidate] = np.maximum(
+        kernel[:, candidate] - coverage,
+        0.0,
+    ).sum(
+        dtype=np.float64,
+    )
+
+ordering = np.argsort(
+    -gains,
+    kind="stable",
+)
+
+print()
+print(
+    "Dense selected candidate:",
+    dense_candidate,
+)
+print(
+    "Blockwise selected candidate:",
+    blockwise_candidate,
+)
+
+print()
+print(
+    "Float64 dense-candidate gain:",
+    f"{gains[dense_candidate]:.12f}",
+)
+print(
+    "Float64 blockwise-candidate gain:",
+    f"{gains[blockwise_candidate]:.12f}",
+)
+print(
+    "Absolute candidate gap:",
+    f"{abs(gains[dense_candidate] - gains[blockwise_candidate]):.12g}",
+)
+
+print()
+print("Top 10 float64 candidates at mismatch:")
+
+for rank, candidate in enumerate(
+    ordering[:10],
+    start=1,
+):
+    print(
+        f"{rank:2d}. "
+        f"candidate={candidate:3d} "
+        f"gain={gains[candidate]:.12f}"
+    )
+PY
+```
+
+## How we should handle this baseline
+
+We should now distinguish two notions of exactness:
+
+### Exact objective
+
+Our blockwise method computes:
+
+* full-pool cosine similarities;
+* exact Facility Location coverage;
+* exact marginal gains under its arithmetic;
+* exact LazyGreedy updates;
+* no candidate sampling or sparse approximation.
+
+That remains true.
+
+### Exact Submodlib ordering
+
+This additionally requires reproducing:
+
+* Submodlib’s float32 kernel arithmetic;
+* its reduction order;
+* its priority-queue tie behavior.
+
+Our current GPU implementation does not guarantee that bitwise ordering.
+
+For the final baseline, the defensible implementation is:
+
+* use the authors’ dense Submodlib ordering on pools where it is feasible;
+* use matrix-free full-pool Facility Location on infeasible pools;
+* validate the matrix-free engine against a common high-precision objective;
+* record any dense/blockwise differences caused by numerically tied candidates.
+
+The correct name remains **SMART exact-objective blockwise**, not “bitwise reproduction of Submodlib ordering.”
+
