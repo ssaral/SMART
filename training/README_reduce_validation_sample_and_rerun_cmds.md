@@ -416,3 +416,366 @@ same trained weights
 same validation subset for all eight runs
 much shorter post-training evaluation
 ```
+
+
+
+---
+
+
+Use the corrected V2 launcher for **all eight runs**, sequentially. Each run will occupy all four H200s.
+
+First verify the critical patches:
+
+```bash
+cd /data/saral/wdir/smart || exit 1
+
+grep -nE \
+  "step_scheduler_with_optimizer=False|lr_scheduler.step|Scheduler/optimizer step mismatch" \
+  instruction_tuner_local.py
+
+grep -nE \
+  "peft_lora_r 64|peft_lora_alpha 32|peft_lora_dropout 0.05|peft_target_modules" \
+  run_one_production_training_v2.sh
+```
+
+The LoRA target line should contain exactly:
+
+```text
+q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj
+```
+
+Then create the batch launcher:
+
+```bash
+cd /data/saral/wdir/smart || exit 1
+
+cat > run_all_finetuning_v2.sh <<'BASH'
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+PROJECT=/data/saral/wdir/smart
+ROOT=/mnt/warm_storage/saral/smart
+
+LAUNCHER="$PROJECT/run_one_production_training_v2.sh"
+
+LLAMA="$PROJECT/llama2_7b"
+QWEN="$PROJECT/qwen2_7b"
+
+export DATA_ROOT="$ROOT/datasets/trainer_eval_safe_10k"
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+
+BATCH_LOG_ROOT="$ROOT/logs/production_training_v2"
+TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
+BATCH_DIR="$BATCH_LOG_ROOT/batch_$TIMESTAMP"
+MASTER_LOG="$BATCH_DIR/master.log"
+STATUS_FILE="$BATCH_DIR/status.tsv"
+
+mkdir -p "$BATCH_DIR"
+
+exec > >(tee -a "$MASTER_LOG") 2>&1
+
+printf \
+  "run\tstatus\tstarted_utc\tfinished_utc\n" \
+  > "$STATUS_FILE"
+
+CURRENT_RUN="preflight"
+
+on_error() {
+    local rc=$?
+
+    echo
+    echo "Batch failed."
+    echo "Run:       $CURRENT_RUN"
+    echo "Exit code: $rc"
+    echo "Master log: $MASTER_LOG"
+
+    exit "$rc"
+}
+
+trap on_error ERR
+
+
+run_experiment() {
+    local model_label="$1"
+    local model_path="$2"
+    local budget="$3"
+    local mode="$4"
+
+    local run_tag
+    local run_name
+    local output_dir
+    local started
+    local finished
+
+    if [[ "$mode" == "full" ]]; then
+        run_tag="scheduler_fixed"
+    else
+        run_tag="scheduler_fixed_r64_a32_proj7"
+    fi
+
+    run_name="${model_label}_smart_${budget}_${mode}_${run_tag}_seed23"
+    output_dir="$ROOT/models/$run_name"
+
+    CURRENT_RUN="$run_name"
+
+    if [[ -f "$output_dir/all_results.json" ]]; then
+        echo
+        echo "Skipping completed run: $run_name"
+
+        printf \
+          "%s\talready_complete\t%s\t%s\n" \
+          "$run_name" \
+          "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          >> "$STATUS_FILE"
+
+        return 0
+    fi
+
+    if [[ -e "$output_dir" ]]; then
+        echo "Incomplete output directory exists:"
+        echo "$output_dir"
+        echo "Move or remove it before restarting."
+        return 1
+    fi
+
+    started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    printf \
+      "%s\tstarted\t%s\t-\n" \
+      "$run_name" \
+      "$started" \
+      >> "$STATUS_FILE"
+
+    echo
+    echo "============================================================"
+    echo "Starting:   $run_name"
+    echo "Model:      $model_path"
+    echo "Budget:     $budget"
+    echo "Mode:       $mode"
+    echo "Dataset:    $DATA_ROOT/smart_$budget"
+    echo "Started:    $started"
+    echo "============================================================"
+
+    "$LAUNCHER" \
+      "$model_label" \
+      "$model_path" \
+      "$budget" \
+      "$mode"
+
+    if [[ ! -f "$output_dir/all_results.json" ]]; then
+        echo "Run finished without all_results.json:"
+        echo "$run_name"
+        return 1
+    fi
+
+    finished=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    printf \
+      "%s\tcomplete\t%s\t%s\n" \
+      "$run_name" \
+      "$started" \
+      "$finished" \
+      >> "$STATUS_FILE"
+
+    echo
+    echo "Completed: $run_name"
+    echo "Finished:  $finished"
+}
+
+
+echo "=== SMART corrected fine-tuning batch ==="
+echo "Dataset root: $DATA_ROOT"
+echo "Batch log:    $MASTER_LOG"
+echo
+
+# Full fine-tuning: author-comparable track.
+run_experiment llama2_7b "$LLAMA" 25000 full
+run_experiment llama2_7b "$LLAMA" 50000 full
+run_experiment qwen2_7b  "$QWEN"  25000 full
+run_experiment qwen2_7b  "$QWEN"  50000 full
+
+# LoRA extension:
+# r=64, alpha=32, dropout=0.05, seven projection targets.
+run_experiment llama2_7b "$LLAMA" 25000 lora
+run_experiment llama2_7b "$LLAMA" 50000 lora
+run_experiment qwen2_7b  "$QWEN"  25000 lora
+run_experiment qwen2_7b  "$QWEN"  50000 lora
+
+CURRENT_RUN="final_verification"
+
+python3 - <<'PY'
+import json
+import math
+from pathlib import Path
+
+root = Path("/mnt/warm_storage/saral/smart/models")
+
+runs = [
+    ("llama2_7b", 25000, "full", "scheduler_fixed", 391),
+    ("llama2_7b", 50000, "full", "scheduler_fixed", 782),
+    ("qwen2_7b", 25000, "full", "scheduler_fixed", 391),
+    ("qwen2_7b", 50000, "full", "scheduler_fixed", 782),
+    (
+        "llama2_7b",
+        25000,
+        "lora",
+        "scheduler_fixed_r64_a32_proj7",
+        391,
+    ),
+    (
+        "llama2_7b",
+        50000,
+        "lora",
+        "scheduler_fixed_r64_a32_proj7",
+        782,
+    ),
+    (
+        "qwen2_7b",
+        25000,
+        "lora",
+        "scheduler_fixed_r64_a32_proj7",
+        391,
+    ),
+    (
+        "qwen2_7b",
+        50000,
+        "lora",
+        "scheduler_fixed_r64_a32_proj7",
+        782,
+    ),
+]
+
+for model, budget, mode, tag, expected_steps in runs:
+    name = (
+        f"{model}_smart_{budget}_{mode}_"
+        f"{tag}_seed23"
+    )
+
+    directory = root / name
+    result_path = directory / "all_results.json"
+
+    if not result_path.is_file():
+        raise FileNotFoundError(result_path)
+
+    result = json.loads(
+        result_path.read_text(encoding="utf-8")
+    )
+
+    assert int(result["completed_steps"]) == expected_steps
+    assert int(result["max_train_steps"]) == expected_steps
+    assert math.isfinite(float(result["eval_loss"]))
+    assert math.isfinite(float(result["perplexity"]))
+
+    if mode == "full":
+        weights = (
+            list(directory.glob("model*.safetensors"))
+            + list(directory.glob("pytorch_model*.bin"))
+        )
+
+        if not weights:
+            raise RuntimeError(
+                f"Missing full weights: {name}"
+            )
+
+    else:
+        adapter_config = json.loads(
+            (
+                directory / "adapter_config.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        assert int(adapter_config["r"]) == 64
+        assert int(adapter_config["lora_alpha"]) == 32
+        assert float(adapter_config["lora_dropout"]) == 0.05
+
+        expected_targets = {
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        }
+
+        actual_targets = set(
+            adapter_config["target_modules"]
+        )
+
+        assert actual_targets == expected_targets, (
+            name,
+            actual_targets,
+        )
+
+    print(
+        f"{name}: "
+        f"steps={result['completed_steps']}, "
+        f"eval_loss={float(result['eval_loss']):.6f}, "
+        f"perplexity={float(result['perplexity']):.6f}"
+    )
+
+print()
+print("All eight corrected fine-tuning runs passed.")
+PY
+
+echo
+echo "============================================================"
+echo "All corrected fine-tuning experiments completed."
+echo "Master log: $MASTER_LOG"
+echo "Status:     $STATUS_FILE"
+echo "============================================================"
+BASH
+
+chmod +x run_all_finetuning_v2.sh
+
+bash -n run_all_finetuning_v2.sh
+```
+
+## Run all experiments
+
+Use a persistent terminal:
+
+```bash
+cd /data/saral/wdir/smart || exit 1
+
+tmux new -s smart_finetuning_v2
+```
+
+Inside `tmux`:
+
+```bash
+./run_all_finetuning_v2.sh
+```
+
+Detach using `Ctrl-b`, then `d`.
+
+Reattach with:
+
+```bash
+tmux attach -t smart_finetuning_v2
+```
+
+Monitor the current run:
+
+```bash
+tail -f \
+  /mnt/warm_storage/saral/smart/logs/production_training_v2/batch_*/master.log
+```
+
+Monitor GPU utilization:
+
+```bash
+watch -n 5 \
+  'nvidia-smi --query-gpu=index,name,memory.used,memory.free,utilization.gpu,power.draw --format=csv'
+```
+
+The final corrected checkpoints will have names such as:
+
+```text
+llama2_7b_smart_25000_full_scheduler_fixed_seed23
+llama2_7b_smart_25000_lora_scheduler_fixed_r64_a32_proj7_seed23
+qwen2_7b_smart_50000_full_scheduler_fixed_seed23
+qwen2_7b_smart_50000_lora_scheduler_fixed_r64_a32_proj7_seed23
+```
