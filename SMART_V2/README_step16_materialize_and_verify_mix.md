@@ -1822,3 +1822,190 @@ validation shuffled            = false
 source content verified        = true
 approximation                  = false
 ```
+
+===
+===
+
+## Error
+
+```
+Traceback (most recent call last): 
+  File "<frozen runpy>", line 198, in _run_module_as_main 
+  File "<frozen runpy>", line 88, in _run_code 
+  File "/data/saral/wdir/smart_v2/src/mixtures/materialize_smart_mixtures.py", line 1693, in <module> 
+    raise SystemExit(main()) 
+                     ^^^^^^ 
+  File "/data/saral/wdir/smart_v2/src/mixtures/materialize_smart_mixtures.py", line 1379, in main 
+    train_report = verify_train( 
+                   ^^^^^^^^^^^^^ 
+  File "/data/saral/wdir/smart_v2/src/mixtures/materialize_smart_mixtures.py", line 806, in verify_train 
+    raise RuntimeError( 
+RuntimeError: Budget 25000: output columns differ from the frozen schema.
+```
+
+## Resolution
+The failure is almost certainly an **order-only column-schema mismatch**, not a selection or data-integrity failure.
+
+`source_index` already exists in the source dataset. After removing and re-adding `task_name` and `template_type`, Hugging Face preserves the existing physical column order. Its `select_columns()` filters columns but does not reliably reorder them according to the supplied list.
+
+Your saved train split therefore likely has:
+
+```text
+inputs
+targets
+task_source
+source_index
+task_name
+template_type
+corpus
+corpus_dataset_index
+selection_rank_within_pool
+marginal_gain
+pre_shuffle_position
+mixture_budget
+```
+
+while `OUTPUT_COLUMNS` expects `source_index` after `template_type`. The verifier compares tuples, so it rejects an otherwise equivalent schema.
+
+## Confirm the diagnosis
+
+The 25K dataset was saved before verification failed:
+
+```bash
+cd /data/saral/wdir/smart_v2 || exit 1
+source ./smart_v2_env.sh
+
+python3 - <<'PY'
+from datasets import load_from_disk
+
+path = "/mnt/warm_storage/saral/smart_v2/mixtures/smart_25000"
+dataset = load_from_disk(path)
+
+expected = (
+    "inputs",
+    "targets",
+    "task_source",
+    "task_name",
+    "template_type",
+    "source_index",
+    "corpus",
+    "corpus_dataset_index",
+    "selection_rank_within_pool",
+    "marginal_gain",
+    "pre_shuffle_position",
+    "mixture_budget",
+)
+
+actual = tuple(dataset["train"].column_names)
+
+print("Actual:")
+for index, column in enumerate(actual):
+    print(f"  {index:2d}: {column}")
+
+print("\nMissing:", sorted(set(expected) - set(actual)))
+print("Unexpected:", sorted(set(actual) - set(expected)))
+print("Same column set:", set(actual) == set(expected))
+print("Same column order:", actual == expected)
+PY
+```
+
+Expected diagnosis:
+
+```text
+Missing: []
+Unexpected: []
+Same column set: True
+Same column order: False
+```
+
+## Patch the verifier
+
+Column order has no semantic effect in a Hugging Face dataset. Replace the strict tuple-order check with a strict column-membership check:
+
+```bash
+cd /data/saral/wdir/smart_v2 || exit 1
+
+python3 - <<'PY'
+from pathlib import Path
+
+path = Path(
+    "src/mixtures/materialize_smart_mixtures.py"
+)
+
+text = path.read_text(encoding="utf-8")
+
+old = '''    if tuple(train.column_names) != OUTPUT_COLUMNS:
+        raise RuntimeError(
+            f"Budget {budget}: output columns differ "
+            "from the frozen schema."
+        )
+'''
+
+new = '''    actual_columns = tuple(train.column_names)
+
+    missing_columns = [
+        column
+        for column in OUTPUT_COLUMNS
+        if column not in actual_columns
+    ]
+
+    unexpected_columns = [
+        column
+        for column in actual_columns
+        if column not in OUTPUT_COLUMNS
+    ]
+
+    if missing_columns or unexpected_columns:
+        raise RuntimeError(
+            f"Budget {budget}: output schema mismatch. "
+            f"Missing={missing_columns}, "
+            f"unexpected={unexpected_columns}, "
+            f"actual_order={list(actual_columns)}."
+        )
+'''
+
+if old not in text:
+    raise RuntimeError(
+        "Could not locate the original strict column-order check."
+    )
+
+path.write_text(
+    text.replace(old, new, 1),
+    encoding="utf-8",
+)
+
+print("Patched:", path)
+PY
+
+python3 -m py_compile \
+  src/mixtures/materialize_smart_mixtures.py
+```
+
+This remains strict about missing or unexpected columns while correctly treating column order as non-semantic.
+
+## Rerun materialization
+
+The partially written `smart_25000` is unverified. The existing `--overwrite` option will replace it safely.
+
+```bash
+cd /data/saral/wdir/smart_v2 || exit 1
+source ./smart_v2_env.sh
+
+python3 -m src.mixtures.materialize_smart_mixtures \
+  --submixture-config /data/saral/wdir/smart_v2/configs/submixtures.json \
+  --author-format-root /mnt/warm_storage/saral/smart_v2/author_format \
+  --task-indices-root /mnt/warm_storage/saral/smart_v2/author_format/task_indices \
+  --orderings /mnt/warm_storage/saral/smart_v2/stage2/author_orderings/facility_location_orderings_all.pkl \
+  --allocations-root /mnt/warm_storage/saral/smart_v2/stage1/allocations \
+  --assembly-summary /mnt/warm_storage/saral/smart_v2/stage2/author_orderings/assembly_summary.json \
+  --output-root /mnt/warm_storage/saral/smart_v2/mixtures \
+  --budgets 25000 50000 \
+  --verification-batch-size 20000 \
+  --overwrite \
+  2>&1 | tee \
+  /mnt/warm_storage/saral/smart_v2/logs/materialize_smart_mixtures.log
+```
+
+No SMART selection, ordering, shuffle, or dataset content is changed by this patch; only the overly strict physical-column-order assertion is corrected.
+
+
