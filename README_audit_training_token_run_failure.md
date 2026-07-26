@@ -5,18 +5,19 @@ Status: failed
 Validation splits identical: True 
 Fatal problems: 2 
   - llama2_7b/shared_validation: 119 rows have zero supervised tokens. 
-  - qwen2_7b/shared_validation: 53 rows have zero supervised tokens. 
-CSV:     /mnt/warm_storage/saral/smart/artifacts/tokenization_audit/tokenization_summary.csv 
-Summary: /mnt/warm_storage/saral/smart/artifacts/tokenization_audit/tokenization_audit_summary.json 
+  - qwen2_7b/shared_validation: 53 rows have zero supervised tokens. <br>
+CSV:     /mnt/warm_storage/saral/smart/artifacts/tokenization_audit/tokenization_summary.csv <br>
+Summary: /mnt/warm_storage/saral/smart/artifacts/tokenization_audit/tokenization_audit_summary.json <br>
 Tokenization audit failed. Do not start training yet. 
 
-model        split                        rows     mean      p99      max     resp    trunc  prompt4k   zero <br>
-llama2_7b    smart_25000_train          25,000    608.0   2288.1    5,681     25.1        3         0      0 <br>
-llama2_7b    smart_50000_train          50,000    564.3   2270.0   12,373     25.3        5         0      0 <br>
-llama2_7b    shared_validation         183,870    533.4   3090.0   14,117     36.3      139       119    119 <br>
-qwen2_7b     smart_25000_train          25,000    535.3   2010.0    3,767     21.8        0         0      0 <br>
-qwen2_7b     smart_50000_train          50,000    497.0   1989.0    7,842     21.9        1         0      0 <br>
-qwen2_7b     shared_validation         183,870    462.4   2756.0   13,367     31.2       58        53     53 <br>
+| Model      | Split                | Rows    | Mean  | P99    | Max    | Resp | Trunc | Prompt >4k | Zero |
+|------------|----------------------|--------:|------:|-------:|-------:|-----:|------:|-----------:|-----:|
+| llama2_7b  | smart_25000_train    | 25,000  | 608.0 | 2288.1 | 5,681  | 25.1 |     3 |          0 |    0 |
+| llama2_7b  | smart_50000_train    | 50,000  | 564.3 | 2270.0 | 12,373 | 25.3 |     5 |          0 |    0 |
+| llama2_7b  | shared_validation    | 183,870 | 533.4 | 3090.0 | 14,117 | 36.3 |   139 |        119 |  119 |
+| qwen2_7b   | smart_25000_train    | 25,000  | 535.3 | 2010.0 | 3,767  | 21.8 |     0 |          0 |    0 |
+| qwen2_7b   | smart_50000_train    | 50,000  | 497.0 | 1989.0 | 7,842  | 21.9 |     1 |          0 |    0 |
+| qwen2_7b   | shared_validation    | 183,870 | 462.4 | 2756.0 | 13,367 | 31.2 |    58 |         53 |   53 |
 
 
 
